@@ -1,0 +1,326 @@
+{
+  "openapi": "3.0.3",
+  "info": {
+    "title": "URL Shortener API",
+    "version": "1.0.0",
+    "description": "A small URL-shortener API. It is the payload that exercises the CI/CD pipeline (zero-downtime deploy + automatic rollback), not the star of the show. POST a URL to get a short code; GET the code to be 301-redirected. Health, readiness, version and Prometheus metrics endpoints back the monitoring and rollback demo.",
+    "license": {
+      "name": "MIT"
+    }
+  },
+  "servers": [
+    {
+      "url": "http://localhost:3000",
+      "description": "local"
+    }
+  ],
+  "tags": [
+    {
+      "name": "links",
+      "description": "Create short links"
+    },
+    {
+      "name": "redirect",
+      "description": "Resolve a code and redirect"
+    },
+    {
+      "name": "observability",
+      "description": "Health, readiness, version and metrics"
+    }
+  ],
+  "components": {
+    "schemas": {
+      "CreateLinkRequest": {
+        "type": "object",
+        "required": [
+          "url"
+        ],
+        "properties": {
+          "url": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://example.com/some/very/long/path"
+          }
+        }
+      },
+      "CreateLinkResponse": {
+        "type": "object",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "example": "a1B2c3D"
+          }
+        }
+      },
+      "Error": {
+        "type": "object",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string",
+            "example": "url must use http or https"
+          }
+        }
+      },
+      "Health": {
+        "type": "object",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          }
+        }
+      },
+      "Readiness": {
+        "type": "object",
+        "required": [
+          "status",
+          "checks"
+        ],
+        "properties": {
+          "status": {
+            "type": "string",
+            "example": "ok"
+          },
+          "reason": {
+            "type": "string",
+            "example": "ready_override"
+          },
+          "checks": {
+            "type": "object",
+            "properties": {
+              "db": {
+                "type": "boolean",
+                "example": true
+              },
+              "redis": {
+                "type": "boolean",
+                "example": true
+              }
+            }
+          }
+        }
+      },
+      "Version": {
+        "type": "object",
+        "required": [
+          "sha"
+        ],
+        "properties": {
+          "sha": {
+            "type": "string",
+            "example": "a1b2c3d"
+          }
+        }
+      }
+    }
+  },
+  "paths": {
+    "/{code}": {
+      "get": {
+        "summary": "Resolve a short code and redirect",
+        "description": "Look up the original URL (Redis first, Postgres on miss, then warm the cache) and issue a 301 redirect. This is the high-RPS hot path the k6 load test drives.\n",
+        "tags": [
+          "redirect"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "code",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The base62 short code returned by POST /links."
+          }
+        ],
+        "responses": {
+          "301": {
+            "description": "Redirect to the original URL.",
+            "headers": {
+              "Location": {
+                "description": "The original URL.",
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The code is malformed.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No link exists for this code.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/metrics": {
+      "get": {
+        "summary": "Prometheus metrics",
+        "description": "Exposes prom-client metrics (request count, latency histogram, cache hit/miss) for Prometheus to scrape.",
+        "tags": [
+          "observability"
+        ],
+        "responses": {
+          "200": {
+            "description": "Metrics in Prometheus text exposition format.",
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/links": {
+      "post": {
+        "summary": "Create a short link",
+        "description": "Shorten an http/https URL. The operation is idempotent: shortening the same URL twice returns the same code (200) rather than creating a duplicate.\n",
+        "tags": [
+          "links"
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateLinkRequest"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "The URL was already shortened; the existing code is returned.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateLinkResponse"
+                }
+              }
+            }
+          },
+          "201": {
+            "description": "A new short link was created.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateLinkResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "The request body or URL was invalid.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/healthz": {
+      "get": {
+        "summary": "Liveness probe",
+        "description": "Always 200 while the process is running. Used as the k8s livenessProbe.",
+        "tags": [
+          "observability"
+        ],
+        "responses": {
+          "200": {
+            "description": "The process is alive.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Health"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/readyz": {
+      "get": {
+        "summary": "Readiness probe",
+        "description": "200 only when both Postgres and Redis are reachable. When the READY_OVERRIDE=fail switch is set (the intentionally-bad version), this returns 503 even though the process is alive — which is exactly what the k8s readinessProbe trips on to trigger the automatic rollback.\n",
+        "tags": [
+          "observability"
+        ],
+        "responses": {
+          "200": {
+            "description": "Dependencies are healthy; ready to serve traffic.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "A dependency is down or the bad-version switch is engaged.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Readiness"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/version": {
+      "get": {
+        "summary": "Build identity",
+        "description": "Returns the BUILD_SHA baked into the image; the signal the rollback demo watches.",
+        "tags": [
+          "observability"
+        ],
+        "responses": {
+          "200": {
+            "description": "The build SHA of the running image.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Version"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}
