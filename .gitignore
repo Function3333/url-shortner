@@ -1,0 +1,40 @@
+# ──────────────────────────────────────────────────────────────
+# AI agent files (operating instructions — keep private)
+# These hold project/strategy context and the trade-secret guardrail,
+# so they must never be committed or published.
+# ──────────────────────────────────────────────────────────────
+CLAUDE.md
+PLAN.md
+docs/
+.claude/
+AGENTS.md
+GEMINI.md
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-instructions.md
+
+# ──────────────────────────────────────────────────────────────
+# Secrets — never commit (per CLAUDE.md §0)
+# ──────────────────────────────────────────────────────────────
+.env
+.env.*
+!.env.example
+kubeconfig
+*.kubeconfig
+.aws/
+*.pem
+
+# ──────────────────────────────────────────────────────────────
+# Node / build
+# ──────────────────────────────────────────────────────────────
+node_modules/
+dist/
+build/
+coverage/
+*.log
+
+# ──────────────────────────────────────────────────────────────
+# OS
+# ──────────────────────────────────────────────────────────────
+.DS_Store
