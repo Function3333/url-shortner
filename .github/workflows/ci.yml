@@ -1,0 +1,96 @@
+# CI/CD pipeline — Job A: lint -> unit test -> multi-stage Docker build -> GHCR push.
+# Delivers PLAN.md Phase 2. Job B (kind integration test + automatic rollback) is
+# added in Phase 4; keeping it in this same file lets a single green run gate merges.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# One in-flight run per ref; a newer push cancels the older run to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  job-a:
+    name: Job A — build, test, image
+    runs-on: ubuntu-latest
+    # Cap a wedged step instead of letting it run to the 6h default.
+    timeout-minutes: 15
+
+    # Least privilege: read the source, write packages (GHCR). Nothing else.
+    permissions:
+      contents: read
+      packages: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: app/package-lock.json
+
+      - name: Install dependencies (clean, lockfile-exact)
+        run: npm --prefix app ci
+
+      # "lint" is a strict type-check (tsc --noEmit); any type error fails the build.
+      - name: Lint / type-check
+        run: npm --prefix app run lint
+
+      - name: Unit tests
+        run: npm --prefix app test
+
+      # ---- Container image: multi-stage build, push to GHCR ----
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # A GHCR image path must be lowercase, but an owner login may contain uppercase.
+      # Read the built-in GITHUB_REPOSITORY_OWNER env var rather than interpolating a
+      # ${{ }} expression into the shell (avoids expression-into-run injection entirely).
+      - name: Compute image reference
+        id: image
+        run: |
+          owner="$(echo "${GITHUB_REPOSITORY_OWNER}" | tr '[:upper:]' '[:lower:]')"
+          echo "ref=ghcr.io/${owner}/cicd-rollback-demo" >> "$GITHUB_OUTPUT"
+
+      # Authenticate only for a real push to main. On pull_request the image is built
+      # (validating the Dockerfile) but not pushed.
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: app
+          file: app/Dockerfile
+          push: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+          build-args: |
+            BUILD_SHA=${{ github.sha }}
+          # Two tags: the immutable commit SHA (Phase 3/4 deploy the image by SHA) and
+          # a moving :latest for convenience.
+          tags: |
+            ${{ steps.image.outputs.ref }}:${{ github.sha }}
+            ${{ steps.image.outputs.ref }}:latest
+          # Link the GHCR package back to this repo and record the source commit.
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          # Reuse layers across runs via the GitHub Actions cache backend.
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          # Single-arch image → skip provenance/SBOM attestations that would otherwise
+          # add stray "unknown/unknown" manifest entries to the GHCR package.
+          provenance: false
